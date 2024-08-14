@@ -18,6 +18,7 @@
 package org.apache.flink.autoscaler.jdbc.event;
 
 import org.apache.flink.annotation.Experimental;
+import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.autoscaler.JobAutoScalerContext;
 import org.apache.flink.autoscaler.ScalingSummary;
 import org.apache.flink.autoscaler.event.AutoScalerEventHandler;
@@ -141,8 +142,8 @@ public class JdbcAutoScalerEventHandler<KEY, Context extends JobAutoScalerContex
         }
     }
 
-    private void cleanExpiredEvents() {
-
+    @VisibleForTesting
+    void cleanExpiredEvents() {
         try {
             JdbcEventInteractor.ExpiredEventsResult expiredResult =
                     jdbcEventInteractor.queryExpiredEventsAndMaxId(eventHandlerTtl);
