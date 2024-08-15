@@ -68,7 +68,7 @@ public class JdbcAutoScalerEventHandler<KEY, Context extends JobAutoScalerContex
                 Executors.newSingleThreadScheduledExecutor(
                         new ThreadFactoryBuilder()
                                 .setNameFormat("jdbc-autoscaler-events-cleaner")
-                                .setDaemon(false)
+                                .setDaemon(true)
                                 .build());
         this.scheduledEventHandlerCleaner.scheduleAtFixedRate(
                 this::cleanExpiredEvents,

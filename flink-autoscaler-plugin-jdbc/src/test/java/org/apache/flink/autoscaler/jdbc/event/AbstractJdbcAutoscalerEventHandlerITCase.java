@@ -42,19 +42,17 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.Map;
+import java.util.function.BiFunction;
 import java.util.stream.Stream;
 
 import static org.apache.flink.autoscaler.TestingAutoscalerUtils.createDefaultJobAutoScalerContext;
@@ -72,6 +70,7 @@ abstract class AbstractJdbcAutoscalerEventHandlerITCase implements DatabaseTest 
     private final Instant createTime = Instant.now().truncatedTo(ChronoUnit.SECONDS);
     private final Map<JobVertexID, ScalingSummary> scalingSummaries =
             generateScalingSummaries(currentParallelism, newParallelism, metricAvg, metricCurrent);
+    private final Clock defaultClock = Clock.fixed(createTime, ZoneId.systemDefault());
 
     private CountableJdbcEventInteractor jdbcEventInteractor;
     private JdbcAutoScalerEventHandler<JobID, JobAutoScalerContext<JobID>> eventHandler;
@@ -80,7 +79,7 @@ abstract class AbstractJdbcAutoscalerEventHandlerITCase implements DatabaseTest 
     @BeforeEach
     void beforeEach() throws Exception {
         jdbcEventInteractor = new CountableJdbcEventInteractor(getConnection());
-        jdbcEventInteractor.setClock(Clock.fixed(createTime, ZoneId.systemDefault()));
+        jdbcEventInteractor.setClock(defaultClock);
         eventHandler = new JdbcAutoScalerEventHandler<>(jdbcEventInteractor, Duration.ZERO);
         ctx = createDefaultJobAutoScalerContext();
     }
@@ -449,71 +448,61 @@ abstract class AbstractJdbcAutoscalerEventHandlerITCase implements DatabaseTest 
 
     @MethodSource("getExpiredEventHandlersCaseMatrix")
     @ParameterizedTest
-    void testCleanExpiredEvents(int expiredRecordsNum, Duration eventHandlerTtl) throws Exception {
+    void testCleanExpiredEvents(
+            int expiredRecordsNum, Duration eventHandlerTtl, int unexpiredRecordsNum)
+            throws Exception {
+        // Init the expired records.
+        initTestingEventHandlerRecords(
+                eventHandlerTtl,
+                expiredRecordsNum,
+                (duration, index) ->
+                        Clock.fixed(
+                                createTime.minusMillis(
+                                        eventHandlerTtl.toMillis() + index * 1000L + 1L),
+                                ZoneId.systemDefault()));
+        // Init the unexpired records.
+        initTestingEventHandlerRecords(
+                eventHandlerTtl,
+                unexpiredRecordsNum,
+                (duration, index) ->
+                        Clock.fixed(createTime.plusMillis(index), ZoneId.systemDefault()));
 
-        final Clock clock = Clock.systemDefaultZone();
-        initExpiredEventHandlerRecords(eventHandlerTtl, expiredRecordsNum, clock);
-        final Timestamp createTimeOfUnExpiredRecord = Timestamp.from(clock.instant());
-        jdbcEventInteractor.createEvent(
-                "jobKey1",
-                "reason",
-                AutoScalerEventHandler.Type.Normal,
-                "message",
-                "eventKey",
-                createTimeOfUnExpiredRecord);
-
-        eventHandler = new JdbcAutoScalerEventHandler<>(jdbcEventInteractor, eventHandlerTtl);
         eventHandler.cleanExpiredEvents();
 
-        // Check
-        try (ResultSet countResultSet =
-                        quickQuery("select count(1) from t_flink_autoscaler_event_handler");
-                ResultSet createTimeResultSet =
-                        quickQuery("select create_time from t_flink_autoscaler_event_handler")) {
-            assertThat(countResultSet).isNotNull();
-            assertThat(countResultSet.next()).isTrue();
-            assertThat(countResultSet.getInt(1)).isOne();
-
-            assertThat(createTimeResultSet).isNotNull();
-            assertThat(createTimeResultSet.next()).isTrue();
-            assertThat(createTimeResultSet.getTimestamp(1)).isEqualTo(createTimeOfUnExpiredRecord);
-        } catch (SQLException e) {
-            throw new RuntimeException(e);
+        try (Connection connection = getConnection();
+                PreparedStatement ps =
+                        connection.prepareStatement(
+                                "select count(1) from t_flink_autoscaler_event_handler");
+                ResultSet countResultSet = ps.executeQuery()) {
+            countResultSet.next();
+            assertThat(countResultSet.getInt(1)).isEqualTo(unexpiredRecordsNum);
         }
     }
 
-    private void initExpiredEventHandlerRecords(
-            Duration eventHandlerTtl, int expiredRecordsNum, Clock clock) throws Exception {
-        for (int i = 0; i < expiredRecordsNum; i++) {
-            Timestamp createTime =
-                    Timestamp.from(
-                            clock.instant().minusMillis(eventHandlerTtl.toMillis() + i * 1000L));
-            jdbcEventInteractor.createEvent(
-                    "jobKey",
-                    "reason",
+    private void initTestingEventHandlerRecords(
+            Duration eventHandlerTtl,
+            int recordsNum,
+            BiFunction<Duration, Integer, Clock> clockGetter) {
+
+        for (int i = 0; i < recordsNum; i++) {
+            jdbcEventInteractor.setClock(clockGetter.apply(eventHandlerTtl, i));
+            eventHandler.handleEvent(
+                    ctx,
                     AutoScalerEventHandler.Type.Normal,
+                    "reason",
                     "message",
-                    "eventKey",
-                    createTime);
+                    "messageKey",
+                    null);
         }
-    }
-
-    @Nullable
-    private ResultSet quickQuery(String sql) {
-        try (Connection con = getConnection();
-                PreparedStatement ps = con.prepareStatement(sql)) {
-            return ps.executeQuery();
-        } catch (Exception e) {
-            throw new RuntimeException(e);
-        }
+        jdbcEventInteractor.setClock(defaultClock);
     }
 
     private static Stream<Arguments> getExpiredEventHandlersCaseMatrix() {
         return Stream.of(
-                Arguments.of(1024, Duration.ofMinutes(2)),
-                Arguments.of(1024 * 5, Duration.ofMinutes(2)),
-                Arguments.of(1024, Duration.ofMinutes(100)),
-                Arguments.of(1024 * 5, Duration.ofMinutes(100)));
+                Arguments.of(1024, Duration.ofMinutes(2), 1),
+                Arguments.of(1024 * 5, Duration.ofMinutes(2), 2),
+                Arguments.of(1024, Duration.ofMinutes(100), 3),
+                Arguments.of(1024 * 5, Duration.ofMinutes(100), 100));
     }
 
     private void createFirstScalingEvent() throws Exception {
@@ -621,9 +610,9 @@ class DerbyJdbcAutoscalerEventHandlerITCase extends AbstractJdbcAutoscalerEventH
 
     @Disabled("Closed due to the 'LIMIT' clause is not supported in Derby.")
     @Override
-    void testCleanExpiredEvents(int expiredRecordsNum, Duration eventHandlerTtl) throws Exception {
-        super.testCleanExpiredEvents(expiredRecordsNum, eventHandlerTtl);
-    }
+    void testCleanExpiredEvents(
+            int expiredRecordsNum, Duration eventHandlerTtl, int unexpiredRecordsNum)
+            throws Exception {}
 }
 
 /** Test {@link JdbcAutoScalerEventHandler} via MySQL 5.6.x. */

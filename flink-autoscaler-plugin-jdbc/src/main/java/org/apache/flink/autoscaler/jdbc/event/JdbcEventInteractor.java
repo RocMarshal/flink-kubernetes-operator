@@ -94,23 +94,12 @@ public class JdbcEventInteractor {
             String message,
             String eventKey)
             throws Exception {
-        createEvent(jobKey, reason, type, message, eventKey, Timestamp.from(clock.instant()));
-    }
-
-    @VisibleForTesting
-    void createEvent(
-            String jobKey,
-            String reason,
-            AutoScalerEventHandler.Type type,
-            String message,
-            String eventKey,
-            Timestamp createTime)
-            throws Exception {
         var query =
                 "INSERT INTO t_flink_autoscaler_event_handler ("
                         + "create_time, update_time, job_key, reason, event_type, message, event_count, event_key)"
                         + " values (?, ?, ?, ?, ?, ?, ?, ?)";
 
+        var createTime = Timestamp.from(clock.instant());
         try (var pstmt = conn.prepareStatement(query)) {
             pstmt.setTimestamp(1, createTime);
             pstmt.setTimestamp(2, createTime);
