@@ -154,6 +154,7 @@ public class JdbcAutoScalerEventHandler<KEY, Context extends JobAutoScalerContex
             var numToClean = expiredResult.expiredRecords;
             var batch = 4098;
             var restInterval = 10L;
+            var loop = 0;
             while (numToClean > 0) {
                 jdbcEventInteractor.deleteExpiredEventsByMaxIdAndBatch(expiredResult.maxId, batch);
                 numToClean -= batch;
