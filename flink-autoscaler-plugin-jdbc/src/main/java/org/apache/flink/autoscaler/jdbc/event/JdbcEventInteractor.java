@@ -177,6 +177,7 @@ public class JdbcEventInteractor {
         }
     }
 
+    // 兼容问题
     public void deleteExpiredEventsByMaxIdAndBatch(long maxTargetId, int batch) throws Exception {
         var query = "delete from t_flink_autoscaler_event_handler where id <= ? limit ?";
         try (var pstmt = conn.prepareStatement(query)) {
